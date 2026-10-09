@@ -9,8 +9,8 @@ android {
     defaultConfig {
         minSdkVersion 23
         targetSdkVersion 26
-        versionCode 3
-        versionName "0.5.0"
+        versionCode 4
+        versionName "0.6.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
@@ -37,6 +37,11 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.2.0'
     
     implementation 'com.github.evotor:integration-library:v0.4.45'
-    
+
+    // D12: явная зависимость. Версия совпадает с эффективной у потребителей
+    // (integration-library:v0.4.45 тянет gson:2.8.5 транзитивно, эффективно
+    // 2.8.9), поэтому граф зависимостей 25 приложений не меняется.
+    implementation 'com.google.code.gson:gson:2.8.9'
+
     testImplementation 'junit:junit:4.13.1'
 }
