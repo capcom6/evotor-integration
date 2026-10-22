@@ -76,3 +76,52 @@ receiptPrinterService.printDocument(printerId, document);
 * h - двойная высота шрифта;
 * w - двойная ширина шрифта;
 * u - подчеркнутый шрифт.
+
+## Структурированная печать
+
+Начиная с версии библиотеки 0.6.0 документ можно передавать получателю печати не как готовый `PrinterDocument`, а как структурированный документ: получатель сам решает, как отрисовать шапку, позиции и произвольные поля.
+
+Модель (пакет `ru.softc.evotor.integration.print`):
+
+* `StructuredDocument(protocolVersion, header, positions, customFields)` - документ;
+* `StructuredPosition(name, quantity, measurePrecision, productUuid, subPositions)` - позиция документа, количество передаётся как `BigDecimal`, чтобы не потерять точность и scale;
+* `PrintCustomField(key, title, value)` - произвольное поле документа.
+
+Точки входа:
+
+* boolean `ServicePrint.printStructured(Context context, StructuredDocument document)` - печать через приложение serviceprint, требует serviceprint версии не ниже 19;
+* boolean `ReceiptPrinter.printStructuredDocument(Context context, long printerId, StructuredDocument document)` - печать на конкретном принтере через драйвер, требует драйвер версии не ниже 142.
+
+Оба метода возвращают `false`, если получатель не установлен или его версия ниже порога. При `false` ничего не отправляется - вызывающий код обязан деградировать сам.
+
+```java
+StructuredDocument document = new StructuredDocument(
+    StructuredDocument.PROTOCOL_VERSION_CURRENT,
+    Collections.singletonMap("receiptNumber", "42"),
+    Collections.singletonList(new StructuredPosition(
+        "Espresso", new BigDecimal("2.500"), 3, "product-1", Collections.<StructuredPosition>emptyList()
+    )),
+    Collections.singletonList(new PrintCustomField("total", "Итого", "1250.00"))
+);
+
+if (!ReceiptPrinter.printStructuredDocument(context, printerId, document)) {
+    // деградация: печатаем обычным документом через ReceiptPrinter.printDocument
+}
+
+```
+
+### Версия протокола и wire-format
+
+`StructuredDocument.protocolVersion` - версия wire-layout контракта, а не версия библиотеки. Поддерживаемая версия публикуется как `StructuredDocument.PROTOCOL_VERSION_CURRENT`.
+
+Документ передаётся в Parcel в виде конверта: `protocolVersion`, длина payload в байтах и сам payload. Получатель читает версию и длину до разбора полей.
+
+Правило получателя: если `protocolVersion` не совпадает с `PROTOCOL_VERSION_CURRENT`, документ отклоняется и печать не выполняется - разбор чужого layout запрещён.
+
+Библиотека не теряет payload чужой версии: он сохраняется непрозрачно и переписывается при пересылке без изменений, поэтому промежуточное приложение (relay) может передать документ дальше, не подменив его пустым.
+
+### Правило проксирования
+
+Правило действует для документов текущей версии протокола: промежуточные приложения (relay, любой слой между вызывающим приложением и получателем печати) обязаны передавать `header` и `customFields` получателю как есть: без фильтрации, переименования, интерпретации и переупорядочивания. Ключи не имеют семантики для промежуточного слоя - значение приходит от вызывающего приложения, отображение определяет получатель.
+
+Документ чужой версии протокола хранится как непрозрачный payload: разобрать его поля relay не может, поэтому содержимое такого документа не разбирается, не интерпретируется и не преобразуется промежуточным слоем. Он пересылается получателю без изменений - целиком, вместе с конвертом версии и длины.

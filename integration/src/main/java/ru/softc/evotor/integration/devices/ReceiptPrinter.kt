@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.BaseColumns
 import ru.evotor.devices.commons.printer.PrinterDocument
+import ru.softc.evotor.integration.print.StructuredDocument
 import java.util.*
 
 /**
@@ -39,6 +40,14 @@ class ReceiptPrinter private constructor(
         @Deprecated("Переходим на работу через BroadcastReceiver или binded Service")
         private const val SERVICE_NAME = "ru.softc.evotorserviceprinter.PrinterDriverService"
         private const val RECEIVER_NAME = "ru.softc.evotorserviceprinter.EventsReceiver"
+
+        /**
+         * Минимальная версия драйвера, поддерживающая структурированную печать (D3)
+         */
+        private const val STRUCTURED_PRINT_MIN_DRIVER_VERSION = 142
+
+        private const val ACTION_PRINT_STRUCTURED =
+            "ru.softc.evotorserviceprinter.ACTION_PRINT_STRUCTURED"
 
         ////////////////////////////////////////////////////////////////////////////////////////////
         @JvmStatic
@@ -174,6 +183,35 @@ class ReceiptPrinter private constructor(
             starter.putExtra("EXTRA_DOCUMENT", document)
             starter.component = name
             context.startService(starter)
+        }
+
+        /**
+         * Печать структурированного документа на конкретный принтер через драйвер.
+         *
+         * @param context Контекст приложения
+         * @param printerId Идентификатор принтера
+         * @param document Структурированный документ
+         * @return true, если документ отправлен драйверу; false, если драйвер не установлен
+         *   либо его версия ниже порога [STRUCTURED_PRINT_MIN_DRIVER_VERSION] (D3).
+         *   При false ничего не отправляется — вызывающий код обязан деградировать сам (D1).
+         */
+        @JvmStatic
+        fun printStructuredDocument(
+            context: Context,
+            printerId: Long,
+            document: StructuredDocument
+        ): Boolean {
+            val version = driverVersion(context) ?: return false
+            if (version < STRUCTURED_PRINT_MIN_DRIVER_VERSION) {
+                return false
+            }
+
+            context.sendBroadcast(Intent(ACTION_PRINT_STRUCTURED).apply {
+                component = ComponentName(PACKAGE_NAME, RECEIVER_NAME)
+                putExtra("EXTRA_PRINTER_ID", printerId)
+                putExtra("EXTRA_DOCUMENT", document)
+            })
+            return true
         }
     }
 
