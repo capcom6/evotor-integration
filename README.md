@@ -85,6 +85,7 @@ receiptPrinterService.printDocument(printerId, document);
 
 * `StructuredDocument(protocolVersion, header, positions, customFields)` - документ;
 * `StructuredPosition(name, quantity, measurePrecision, productUuid, subPositions, customFields)` - позиция документа, количество передаётся как `BigDecimal`, чтобы не потерять точность и scale;
+* `measurePrecision` - количество знаков после запятой при выводе количества. Если ключ отсутствует (или `null`), берётся scale количества: `quantity=2.500` выводится как `2.500`, а не округляется до `3`. Явный `0` (штуки) сохраняется и не перекрывается scale. Допустимый диапазон - 0..18 в обоих случаях; значение вне диапазона или не целое отклоняется на разборе с `IllegalArgumentException`, а не на печати;
 * `PrintCustomField(key, title, value)` - произвольное поле документа.
 
 Точки входа:

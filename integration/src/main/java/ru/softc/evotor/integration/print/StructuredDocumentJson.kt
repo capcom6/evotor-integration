@@ -39,8 +39,15 @@ import java.math.BigDecimal
  * - Неизвестные ключи при чтении игнорируются - это и есть forward-совместимость.
  * - Отсутствующие опциональные поля дают значения по умолчанию, а не ошибку:
  *   `header` - пустая карта, `positions`/`customFields`/`subPositions` - пустые
- *   списки, `productUuid` - null, `measurePrecision` - 0, `name` - пустая строка,
+ *   списки, `productUuid` - null, `name` - пустая строка,
  *   `quantity` - [BigDecimal.ZERO], `protocolVersion` - 0 (версия неизвестна).
+ * - `measurePrecision` - единственное исключение из дефолтов: при отсутствии
+ *   ключа берётся scale количества, а не 0. Иначе `quantity=2.500` печатался
+ *   бы как `"3"`, потому что форматтер `%.0f` при точности 0 округляет до
+ *   целого. Присутствующий ключ (включая явный 0 - штуки) читается как есть.
+ * - Точность измерения обязана попадать в диапазон 0..18 в обоих случаях;
+ *   нарушение - [IllegalArgumentException], а не тихое переполнение. См.
+ *   [readMeasurePrecision].
  * - Значение поля, равное `null`, читается как пустая строка - null вне
  *   типизированного контракта (`Map<String, String>`), и чтение не должно
  *   прерываться из-за чужих данных.
@@ -67,6 +74,22 @@ object StructuredDocumentJson {
     private const val KEY_KEY = "key"
     private const val KEY_TITLE = "title"
     private const val KEY_VALUE = "value"
+
+    /**
+     * Допустимый диапазон точности измерения.
+     *
+     * Нижняя граница 0 - штуки. Верхняя 18 - это одновременно:
+     * (а) максимальный scale, который контракт документирует как сохраняемый
+     * (см. проверку high-precision-количество), поэтому проверка не отвергает
+     * данные, которые сам контракт обязан переносить;
+     * (б) порядок, глубже которого в реальных отсчётах Evotor точность не
+     * бывает (штуки 0, граммы 1, килограммы 3);
+     * (в) гарантия, что `String.format("%.Nf")` не выдаёт строку шире печатной.
+     * Всё, что за границей, считается битыми данными и отклоняется на разборе,
+     * а не на печати.
+     */
+    private const val MIN_MEASURE_PRECISION = 0
+    private const val MAX_MEASURE_PRECISION = 18
 
     /**
      * Сериализует документ в JSON-строку.
@@ -289,7 +312,7 @@ object StructuredDocumentJson {
     private fun readPosition(node: JsonObject): StructuredPosition {
         val name = readString(node.get(KEY_NAME), KEY_NAME)
         val quantity = readQuantity(node.get(KEY_QUANTITY))
-        val measurePrecision = readInt(node.get(KEY_MEASURE_PRECISION), KEY_MEASURE_PRECISION, 0)
+        val measurePrecision = readMeasurePrecision(node.get(KEY_MEASURE_PRECISION), quantity)
         val productUuid = readNullableString(node.get(KEY_PRODUCT_UUID), KEY_PRODUCT_UUID)
         val subPositions = readPositions(node.get(KEY_SUB_POSITIONS), KEY_SUB_POSITIONS)
         val customFields = readCustomFields(node.get(KEY_CUSTOM_FIELDS), KEY_CUSTOM_FIELDS)
@@ -360,6 +383,60 @@ object StructuredDocumentJson {
             throw IllegalArgumentException("'$path' должен быть строкой")
         }
         return element.asString
+    }
+
+    /**
+     * Читает точность измерения позиции.
+     *
+     * Правила чтения:
+     *
+     * - **Ключ отсутствует** (или `null`) - берётся scale количества. Раньше
+     *   здесь стоял дефолт 0, и `quantity=2.500` печатался бы как `"3"`:
+     *   форматтер `ru.softc.helpers.formatDecimal` делает `%.0f` при точности 0.
+     *   Scale количества сохраняет ровно то, что передал отправитель (W1).
+     * - **Ключ присутствует** - читается как целое, включая явный 0 (штуки).
+     *   Отсутствующий ключ и явный 0 теперь различимы.
+     * - **Диапазон 0..18 обязателен для обоих путей.** Значение разбирается
+     *   через строку и сверяется с диапазоном как `Long` **до** приведения к
+     *   `Int`: `JsonPrimitive.getAsInt` молча переполняет
+     *   (999999999999 -> -727379969), а отрицательная точность взрывает
+     *   `String.format` уже в рендере - отказ поздний и неочевидный. Здесь
+     *   ошибка ловится на разборе и обрабатывается получателем как битый
+     *   документ (W3, AC-DR-10 / AC-SP-8).
+     *
+     * @throws IllegalArgumentException если значение вне диапазона 0..18, не
+     *  является целым числом либо не является примитивом.
+     */
+    private fun readMeasurePrecision(element: JsonElement?, quantity: BigDecimal): Int {
+        if (element == null || element.isJsonNull) {
+            return checkMeasurePrecision(quantity.scale().toLong(), "как scale количества")
+        }
+        if (!element.isJsonPrimitive) {
+            throw IllegalArgumentException("'$KEY_MEASURE_PRECISION' должен быть целым числом")
+        }
+
+        val raw = element.asString
+        val parsed = raw.toLongOrNull()
+            ?: throw IllegalArgumentException(
+                "'$KEY_MEASURE_PRECISION' не является целым числом: '$raw'"
+            )
+        return checkMeasurePrecision(parsed, "='$raw'")
+    }
+
+    /**
+     * Проверяет точность на диапазон и приводит к `Int`.
+     *
+     * Проверка выполняется на [Long]: так ловятся и отрицательные значения,
+     * и выходящие за `Int` числа, иначе приведение молча завернуло бы их.
+     */
+    private fun checkMeasurePrecision(value: Long, source: String): Int {
+        if (value < MIN_MEASURE_PRECISION || value > MAX_MEASURE_PRECISION) {
+            throw IllegalArgumentException(
+                "'$KEY_MEASURE_PRECISION' вне допустимого диапазона " +
+                    "$MIN_MEASURE_PRECISION..$MAX_MEASURE_PRECISION $source"
+            )
+        }
+        return value.toInt()
     }
 
     private fun readInt(element: JsonElement?, path: String, default: Int): Int {

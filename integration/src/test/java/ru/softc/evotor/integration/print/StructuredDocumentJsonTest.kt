@@ -43,6 +43,12 @@ class StructuredDocumentJsonTest {
         customFields = listOf(PrintCustomField("total", "Итого", "1250.00"))
     )
 
+    /**
+     * Разбор только для проверок. В кодеке используется `JsonParser().parse()`,
+     * а не `parseString`: статический метод есть с Gson 2.8.6, а версия Gson
+     * у потребителя берётся из его графа и встречается 2.8.5 (POM библиотеки
+     * секции dependencies не содержит). НЕ переносите `parseString` в кодек.
+     */
     private fun parse(json: String): JsonObject = JsonParser.parseString(json).asJsonObject
 
     @Test
@@ -120,7 +126,9 @@ class StructuredDocumentJsonTest {
         assertTrue(document.customFields.isEmpty())
         assertEquals(1, document.positions.size)
         assertEquals("", document.positions[0].name)
-        assertEquals(0, document.positions[0].measurePrecision)
+        // W1: отсутствующий measurePrecision берётся из scale количества,
+        // а не равен 0. Здесь quantity "1.000" -> scale 3.
+        assertEquals(3, document.positions[0].measurePrecision)
         assertNull(document.positions[0].productUuid)
         assertTrue(document.positions[0].subPositions.isEmpty())
         assertTrue(document.positions[0].customFields.isEmpty())
@@ -434,5 +442,125 @@ class StructuredDocumentJsonTest {
             root.getAsJsonArray("customFields")[0].asJsonObject.keySet()
         )
         assertFalse(root.has("opaquePayload"))
+    }
+
+    // ───────── W1: отсутствующий measurePrecision берётся из scale количества ─────────
+
+    private fun documentWith(positionJson: String): String =
+        """{"protocolVersion":1,"header":{},"positions":[{$positionJson}],"customFields":[]}"""
+
+    private fun positionWithoutPrecision(quantity: String = "\"2.500\""): String =
+        "\"name\":\"Espresso\",\"quantity\":$quantity,\"productUuid\":null," +
+            "\"subPositions\":[],\"customFields\":[]"
+
+    @Test
+    fun missingMeasurePrecisionFallsBackToQuantityScale() {
+        val json = documentWith(positionWithoutPrecision(quantity = "\"2.500\""))
+
+        val position = StructuredDocumentJson.fromJson(json).positions.single()
+
+        assertEquals(BigDecimal("2.500"), position.quantity)
+        assertEquals(3, position.measurePrecision)
+    }
+
+    @Test
+    fun missingMeasurePrecisionUsesScaleOfTheGivenQuantity() {
+        assertEquals(
+            2,
+            StructuredDocumentJson.fromJson(documentWith(positionWithoutPrecision("\"1.50\"")))
+                .positions.single().measurePrecision
+        )
+        assertEquals(
+            0,
+            StructuredDocumentJson.fromJson(documentWith(positionWithoutPrecision("7")))
+                .positions.single().measurePrecision
+        )
+    }
+
+    @Test
+    fun explicitZeroMeasurePrecisionIsNotOverriddenByScale() {
+        // Явный 0 (штуки) обязан побеждать scale: иначе количество перестанет
+        // печататься целым.
+        val json = documentWith(positionWithoutPrecision() + ",\"measurePrecision\":0")
+
+        val position = StructuredDocumentJson.fromJson(json).positions.single()
+
+        assertEquals(0, position.measurePrecision)
+        assertEquals(BigDecimal("2.500"), position.quantity)
+    }
+
+    @Test
+    fun nullMeasurePrecisionIsTreatedAsAbsent() {
+        val json = documentWith(positionWithoutPrecision() + ",\"measurePrecision\":null")
+
+        assertEquals(3, StructuredDocumentJson.fromJson(json).positions.single().measurePrecision)
+    }
+
+    @Test
+    fun bothQuantityAndMeasurePrecisionAbsentGiveZero() {
+        val json = documentWith(
+            "\"name\":\"Espresso\",\"productUuid\":null,\"subPositions\":[],\"customFields\":[]"
+        )
+
+        val position = StructuredDocumentJson.fromJson(json).positions.single()
+
+        assertEquals(BigDecimal.ZERO, position.quantity)
+        assertEquals(0, position.measurePrecision)
+    }
+
+    // ───────── W3: диапазон 0..9, fail-fast ─────────
+
+    @Test
+    fun measurePrecisionBoundsAreAccepted() {
+        assertEquals(
+            0,
+            StructuredDocumentJson.fromJson(documentWith(positionWithoutPrecision() + ",\"measurePrecision\":0"))
+                .positions.single().measurePrecision
+        )
+        assertEquals(
+            18,
+            StructuredDocumentJson.fromJson(documentWith(positionWithoutPrecision() + ",\"measurePrecision\":18"))
+                .positions.single().measurePrecision
+        )
+    }
+
+    @Test
+    fun measurePrecisionOutsideBoundsIsRejected() {
+        for (value in listOf("\"19\"", "\"100\"", "\"-1\"", "\"-999999999999\"")) {
+            val json = documentWith(positionWithoutPrecision() + ",\"measurePrecision\":$value")
+            try {
+                StructuredDocumentJson.fromJson(json)
+                fail("measurePrecision=$value должна была быть отклонена")
+            } catch (expected: IllegalArgumentException) {
+                assertTrue(expected.message.orEmpty().contains("measurePrecision"))
+            }
+        }
+    }
+
+    @Test
+    fun measurePrecisionOverflowIsRejectedInsteadOfWrapping() {
+        // JsonPrimitive.getAsInt молча переполняется: 999999999999 -> -727379969,
+        // и отрицательная точность уже в рендере взрывает String.format.
+        // Разбор обязан это отловить, а не пропустить как валидное -727379969.
+        val json = documentWith(positionWithoutPrecision() + ",\"measurePrecision\":999999999999")
+
+        try {
+            StructuredDocumentJson.fromJson(json)
+            fail("Переполнение measurePrecision должно быть отклонено")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message.orEmpty().contains("measurePrecision"))
+        }
+    }
+
+    @Test
+    fun nonIntegerMeasurePrecisionIsRejected() {
+        val json = documentWith(positionWithoutPrecision() + ",\"measurePrecision\":true")
+
+        try {
+            StructuredDocumentJson.fromJson(json)
+            fail("Не-целое measurePrecision должно быть отклонено")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message.orEmpty().contains("measurePrecision"))
+        }
     }
 }
