@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.BaseColumns
 import ru.evotor.devices.commons.printer.PrinterDocument
+import ru.softc.evotor.integration.print.StructuredDocument
+import ru.softc.evotor.integration.print.StructuredDocumentJson
 import java.util.*
 
 /**
@@ -39,6 +41,24 @@ class ReceiptPrinter private constructor(
         @Deprecated("Переходим на работу через BroadcastReceiver или binded Service")
         private const val SERVICE_NAME = "ru.softc.evotorserviceprinter.PrinterDriverService"
         private const val RECEIVER_NAME = "ru.softc.evotorserviceprinter.EventsReceiver"
+
+        /**
+         * Минимальная версия драйвера, поддерживающая структурированную печать (D3)
+         */
+        private const val STRUCTURED_PRINT_MIN_DRIVER_VERSION = 142
+
+        private const val ACTION_PRINT_STRUCTURED =
+            "ru.softc.evotorserviceprinter.ACTION_PRINT_STRUCTURED"
+
+        /**
+         * Extra с JSON-строкой структурированного документа.
+         *
+         * Имя намеренно отличается от `EXTRA_DOCUMENT`, который драйвер уже
+         * использует для Parcelable-документа в действии `ACTION_PRINT_DOCUMENT`:
+         * оба действия обрабатываются в одном `onReceive`, и одинаковое имя
+         * extra у двух разных типов исключает путаницу.
+         */
+        private const val EXTRA_DOCUMENT_JSON = "EXTRA_DOCUMENT_JSON"
 
         ////////////////////////////////////////////////////////////////////////////////////////////
         @JvmStatic
@@ -174,6 +194,62 @@ class ReceiptPrinter private constructor(
             starter.putExtra("EXTRA_DOCUMENT", document)
             starter.component = name
             context.startService(starter)
+        }
+
+        /**
+         * Печать структурированного документа на конкретный принтер через драйвер.
+         *
+         * Документ сериализуется кодеком [StructuredDocumentJson] в JSON-строку и
+         * передаётся драйверу строкой: драйвер сам решает, как отрисовать шапку,
+         * позиции и произвольные поля по своему шаблону.
+         *
+         * @param context Контекст приложения
+         * @param printerId Идентификатор принтера
+         * @param document Структурированный документ
+         * @return true, если документ отправлен драйверу; false, если драйвер не установлен
+         *   либо его версия ниже порога [STRUCTURED_PRINT_MIN_DRIVER_VERSION] (D3).
+         *   При false ничего не отправляется — вызывающий код обязан деградировать сам (D1).
+         */
+        @JvmStatic
+        fun printStructuredDocument(
+            context: Context,
+            printerId: Long,
+            document: StructuredDocument
+        ): Boolean {
+            return printStructuredDocument(context, printerId, StructuredDocumentJson.toJson(document))
+        }
+
+        /**
+         * Печать структурированного документа на конкретный принтер через драйвер.
+         *
+         * JSON-строка передаётся драйверу как есть, без разбора в типизированную
+         * модель: промежуточный слой (relay) обязан пересылать документ, сохраняя
+         * неизвестные ключи, - разбор в модель их бы отбросил.
+         *
+         * @param context Контекст приложения
+         * @param printerId Идентификатор принтера
+         * @param documentJson JSON-строка структурированного документа
+         * @return true, если документ отправлен драйверу; false, если драйвер не установлен
+         *   либо его версия ниже порога [STRUCTURED_PRINT_MIN_DRIVER_VERSION] (D3).
+         *   При false ничего не отправляется — вызывающий код обязан деградировать сам (D1).
+         */
+        @JvmStatic
+        fun printStructuredDocument(
+            context: Context,
+            printerId: Long,
+            documentJson: String
+        ): Boolean {
+            val version = driverVersion(context) ?: return false
+            if (version < STRUCTURED_PRINT_MIN_DRIVER_VERSION) {
+                return false
+            }
+
+            context.sendBroadcast(Intent(ACTION_PRINT_STRUCTURED).apply {
+                component = ComponentName(PACKAGE_NAME, RECEIVER_NAME)
+                putExtra("EXTRA_PRINTER_ID", printerId)
+                putExtra(EXTRA_DOCUMENT_JSON, documentJson)
+            })
+            return true
         }
     }
 

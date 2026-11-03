@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import ru.evotor.devices.commons.printer.printable.IPrintable
 import ru.evotor.framework.receipt.Position
+import ru.softc.evotor.integration.print.StructuredDocument
+import ru.softc.evotor.integration.print.StructuredDocumentJson
 import java.util.*
 
 /**
@@ -18,6 +20,23 @@ object ServicePrint {
     private const val SERVICE_NAME = "ru.softc.evotor.serviceprint.services.PrintDivideService"
     private const val RECIEVER_NAME = "ru.softc.evotor.serviceprint.recievers.EventsReceiver"
     private const val ACTIVITY_NAME = "ru.softc.evotor.serviceprint.MainActivity"
+
+    /**
+     * Минимальная версия serviceprint, поддерживающая структурированную печать (D3)
+     */
+    private const val STRUCTURED_PRINT_MIN_APP_VERSION = 19
+
+    private const val ACTION_PRINT_STRUCTURED = "ru.softc.evotor.serviceprint.ACTION_PRINT_STRUCTURED"
+
+    /**
+     * Extra с JSON-строкой структурированного документа.
+     *
+     * Имя намеренно отличается от `EXTRA_DOCUMENT` драйвера принтера: драйвер
+     * различает действия `ACTION_PRINT_DOCUMENT` (Parcelable-документ) и
+     * `ACTION_PRINT_STRUCTURED` (JSON) в одном `onReceive`, и одинаковое имя
+     * extra у двух разных типов исключает путаницу.
+     */
+    private const val EXTRA_DOCUMENT_JSON = "EXTRA_DOCUMENT_JSON"
 
     @JvmStatic
     fun createIntentForSettings(): Intent {
@@ -70,5 +89,32 @@ object ServicePrint {
         starter.putExtra("EXTRA_POSITIONS", positions)
         starter.component = name
         context.startService(starter)
+    }
+
+    /**
+     * Печать структурированного документа через serviceprint.
+     *
+     * Документ сериализуется кодеком [StructuredDocumentJson] в JSON-строку и
+     * передаётся получателю строкой: получатель сам решает, как отрисовать
+     * шапку, позиции и произвольные поля.
+     *
+     * @param context Контекст приложения
+     * @param document Структурированный документ
+     * @return true, если документ отправлен получателю; false, если serviceprint
+     *   не установлен либо его версия ниже порога [STRUCTURED_PRINT_MIN_APP_VERSION] (D3).
+     *   При false ничего не отправляется — вызывающий код обязан деградировать сам (D1).
+     */
+    @JvmStatic
+    fun printStructured(context: Context, document: StructuredDocument): Boolean {
+        val version = appVersion(context) ?: return false
+        if (version < STRUCTURED_PRINT_MIN_APP_VERSION) {
+            return false
+        }
+
+        context.sendBroadcast(Intent(ACTION_PRINT_STRUCTURED).apply {
+            component = ComponentName(PACKAGE_NAME, RECIEVER_NAME)
+            putExtra(EXTRA_DOCUMENT_JSON, StructuredDocumentJson.toJson(document))
+        })
+        return true
     }
 }

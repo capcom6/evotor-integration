@@ -1,0 +1,28 @@
+name: Remove Labels on New Push
+
+on:
+  pull_request_target:
+    types: [opened, synchronize] # Trigger on PR opened or new commits pushed
+
+jobs:
+  remove_labels:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # Grant permission to modify labels
+    steps:
+      # step 1: checkout repository code
+      - name: Checkout code into workspace directory
+        uses: actions/checkout@v4
+
+      # step 2: remove specific labels
+      - name: Remove specific labels
+        run: |
+          pr_number="${{ github.event.pull_request.number }}"
+          labels=$(gh pr view "$pr_number" --json labels --jq '.labels[].name')
+          for label in ready deployed; do
+            if grep -qxF "$label" <<<"$labels"; then
+              gh pr edit "$pr_number" --remove-label "$label"
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
