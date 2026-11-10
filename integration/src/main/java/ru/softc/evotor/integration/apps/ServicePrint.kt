@@ -38,6 +38,15 @@ object ServicePrint {
      */
     private const val EXTRA_DOCUMENT_JSON = "EXTRA_DOCUMENT_JSON"
 
+    /**
+     * Extra с версией wire-layout контракта в конверте Intent (D19).
+     *
+     * Продьюсер штампует версию, по которой **сам** уложил тело документа.
+     * Строковое значение согласовано с драйвером принтера
+     * (`ReceiptPrinter.EXTRA_PROTOCOL_VERSION`): читает и пишет его получатель.
+     */
+    const val EXTRA_PROTOCOL_VERSION = "EXTRA_PROTOCOL_VERSION"
+
     @JvmStatic
     fun createIntentForSettings(): Intent {
         val name = ComponentName(PACKAGE_NAME, ACTIVITY_NAME)
@@ -114,6 +123,8 @@ object ServicePrint {
         context.sendBroadcast(Intent(ACTION_PRINT_STRUCTURED).apply {
             component = ComponentName(PACKAGE_NAME, RECIEVER_NAME)
             putExtra(EXTRA_DOCUMENT_JSON, StructuredDocumentJson.toJson(document))
+            // Штамп конверта: тело уложено здесь, версия - текущая (D19).
+            putExtra(EXTRA_PROTOCOL_VERSION, StructuredDocument.PROTOCOL_VERSION_CURRENT)
         })
         return true
     }

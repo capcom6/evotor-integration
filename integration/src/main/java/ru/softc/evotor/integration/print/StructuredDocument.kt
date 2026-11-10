@@ -11,12 +11,13 @@ package ru.softc.evotor.integration.print
  * у JSON нет compile-time схемы, и опечатка в имени ключа приводит к тихой
  * потере поля.
  *
- * Ключи документа: `protocolVersion`, `header`, `positions`, `customFields`.
+ * Ключи документа: `header`, `positions`, `customFields`.
  *
  * ## Версия протокола: диагностическая, не гейтящая
  *
- * [protocolVersion] - версия wire-layout этого контракта, а не версия библиотеки.
- * Поддерживаемая библиотекой версия публикуется как [PROTOCOL_VERSION_CURRENT].
+ * Версия wire-layout этого контракта живёт в конверте Intent
+ * (`EXTRA_PROTOCOL_VERSION`), а не в теле документа. Поддерживаемая
+ * библиотекой версия публикуется как [PROTOCOL_VERSION_CURRENT].
  *
  * Правило получателя (D9): **несовпадение версий не является отказом**. Получатель
  * печатает известные поля и логирует расхождение; разбор документа при этом
@@ -36,14 +37,11 @@ package ru.softc.evotor.integration.print
  * [StructuredDocumentJson.splitByPositions], а не с типизированной моделью:
  * разбор в модель отбрасывает неизвестные ключи и нарушает инвариант.
  *
- * @param protocolVersion Версия wire-layout контракта. Диагностическая: несовпадение
- *  версий не отменяет печать, а логируется получателем.
  * @param header Шапка документа: произвольные пары ключ-значение.
  * @param positions Позиции документа. Пустой список допустим.
  * @param customFields Произвольные поля документа. Пустой список допустим.
  */
 data class StructuredDocument(
-    val protocolVersion: Int,
     val header: Map<String, String>,
     val positions: List<StructuredPosition>,
     val customFields: List<PrintCustomField>
@@ -52,9 +50,10 @@ data class StructuredDocument(
         /**
          * Версия wire-layout [StructuredDocument], которую пишет библиотека.
          *
-         * Публичная константа: получатель сравнивает её со значением
-         * [StructuredDocument.protocolVersion] и логирует расхождение. Отказ от
-         * печати по несовпадению версий не выполняется (см. KDoc класса).
+         * Публичная константа: продьюсер штампует её в конверт Intent
+         * (extra `EXTRA_PROTOCOL_VERSION`), получатель сравнивает и логирует
+         * расхождение. Отказ от печати по несовпадению версий не выполняется
+         * (см. KDoc класса).
          */
         const val PROTOCOL_VERSION_CURRENT = 1
     }

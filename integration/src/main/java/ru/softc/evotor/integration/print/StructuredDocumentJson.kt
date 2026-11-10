@@ -25,7 +25,7 @@ import java.math.BigDecimal
  *
  * ## Правила формата
  *
- * Ключи документа: `protocolVersion`, `header`, `positions`, `customFields`.
+ * Ключи документа: `header`, `positions`, `customFields`.
  * Ключи позиции: `name`, `quantity`, `measurePrecision`, `productUuid`,
  * `subPositions`, `customFields`. Ключи произвольного поля: `key`, `title`,
  * `value`.
@@ -34,13 +34,14 @@ import java.math.BigDecimal
  *   сохраняется гарантированно. `measurePrecision` идёт отдельным целым числом.
  *   Читатель принимает и строку, и число: берётся строковое представление
  *   значения и оно парсится в [BigDecimal].
- * - `protocolVersion` - диагностическое поле: несовпадение версий **не**
- *   отменяет чтение и не отменяет печать.
  * - Неизвестные ключи при чтении игнорируются - это и есть forward-совместимость.
+ *   Версия wire-layout живёт в конверте Intent (`EXTRA_PROTOCOL_VERSION`), а не в
+ *   теле: случайный ключ `protocolVersion` в теле старого продьюсера тоже
+ *   игнорируется.
  * - Отсутствующие опциональные поля дают значения по умолчанию, а не ошибку:
  *   `header` - пустая карта, `positions`/`customFields`/`subPositions` - пустые
  *   списки, `productUuid` - null, `name` - пустая строка,
- *   `quantity` - [BigDecimal.ZERO], `protocolVersion` - 0 (версия неизвестна).
+ *   `quantity` - [BigDecimal.ZERO].
  * - `measurePrecision` - единственное исключение из дефолтов: при отсутствии
  *   ключа берётся scale количества, а не 0. Иначе `quantity=2.500` печатался
  *   бы как `"3"`, потому что форматтер `%.0f` при точности 0 округляет до
@@ -62,7 +63,6 @@ import java.math.BigDecimal
  */
 object StructuredDocumentJson {
 
-    private const val KEY_PROTOCOL_VERSION = "protocolVersion"
     private const val KEY_HEADER = "header"
     private const val KEY_POSITIONS = "positions"
     private const val KEY_CUSTOM_FIELDS = "customFields"
@@ -106,8 +106,8 @@ object StructuredDocumentJson {
      * Разбирает JSON-строку в типизированный документ.
      *
      * Неизвестные ключи игнорируются, отсутствующие опциональные поля дают
-     * значения по умолчанию. `protocolVersion` не гейтит разбор: документ любой
-     * версии читается полностью, получатель сам решает, что с ним делать.
+     * значения по умолчанию. Тело не несёт версии протокола (D19): версия
+     * передаётся в конверте Intent и разбор тела от неё не зависит.
      *
      * @param json JSON-строка документа.
      * @return Разобранный документ.
@@ -181,7 +181,6 @@ object StructuredDocumentJson {
 
     private fun writeDocument(document: StructuredDocument): JsonObject {
         val root = JsonObject()
-        root.addProperty(KEY_PROTOCOL_VERSION, document.protocolVersion)
 
         val header = JsonObject()
         for ((key, value) in document.header) {
@@ -269,11 +268,10 @@ object StructuredDocumentJson {
     }
 
     private fun readDocument(root: JsonObject): StructuredDocument {
-        val protocolVersion = readInt(root.get(KEY_PROTOCOL_VERSION), KEY_PROTOCOL_VERSION, 0)
         val header = readHeader(root.get(KEY_HEADER))
         val positions = readPositions(root.get(KEY_POSITIONS), KEY_POSITIONS)
         val customFields = readCustomFields(root.get(KEY_CUSTOM_FIELDS), KEY_CUSTOM_FIELDS)
-        return StructuredDocument(protocolVersion, header, positions, customFields)
+        return StructuredDocument(header, positions, customFields)
     }
 
     private fun readHeader(element: JsonElement?): Map<String, String> {
@@ -437,20 +435,6 @@ object StructuredDocumentJson {
             )
         }
         return value.toInt()
-    }
-
-    private fun readInt(element: JsonElement?, path: String, default: Int): Int {
-        if (element == null || element.isJsonNull) {
-            return default
-        }
-        if (!element.isJsonPrimitive) {
-            throw IllegalArgumentException("'$path' должен быть числом")
-        }
-        return try {
-            element.asInt
-        } catch (error: RuntimeException) {
-            throw IllegalArgumentException("'$path' должен быть целым числом", error)
-        }
     }
 
     private fun asObject(element: JsonElement, path: String): JsonObject {

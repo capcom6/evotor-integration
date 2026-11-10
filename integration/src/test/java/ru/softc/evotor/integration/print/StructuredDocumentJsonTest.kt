@@ -37,7 +37,6 @@ class StructuredDocumentJsonTest {
     )
 
     private fun sampleDocument(): StructuredDocument = StructuredDocument(
-        protocolVersion = StructuredDocument.PROTOCOL_VERSION_CURRENT,
         header = linkedMapOf("receiptNumber" to "42", "cashier" to "Ivanov"),
         positions = listOf(samplePosition()),
         customFields = listOf(PrintCustomField("total", "Итого", "1250.00"))
@@ -121,7 +120,6 @@ class StructuredDocumentJsonTest {
     fun missingOptionalFieldsFallBackToDefaults() {
         val document = StructuredDocumentJson.fromJson("""{"positions":[{"quantity":"1.000"}]}""")
 
-        assertEquals(0, document.protocolVersion)
         assertTrue(document.header.isEmpty())
         assertTrue(document.customFields.isEmpty())
         assertEquals(1, document.positions.size)
@@ -137,7 +135,6 @@ class StructuredDocumentJsonTest {
     @Test
     fun nullProductUuidSurvivesRoundTrip() {
         val document = StructuredDocument(
-            protocolVersion = 1,
             header = emptyMap(),
             positions = listOf(
                 StructuredPosition(
@@ -186,7 +183,6 @@ class StructuredDocumentJsonTest {
     @Test
     fun splitByPositionsDividesPositionsBetweenPrinters() {
         val document = StructuredDocument(
-            protocolVersion = 1,
             header = mapOf("receiptNumber" to "42"),
             positions = listOf(
                 StructuredPosition("First", BigDecimal("1.000"), 0, "p1", emptyList(), emptyList()),
@@ -216,7 +212,6 @@ class StructuredDocumentJsonTest {
     @Test
     fun splitByPositionsKeepsEveryOtherFieldOfTheDocument() {
         val document = StructuredDocument(
-            protocolVersion = 1,
             header = mapOf("receiptNumber" to "42"),
             positions = listOf(
                 StructuredPosition("First", BigDecimal("1.000"), 3, "p1", emptyList(), emptyList())
@@ -226,7 +221,7 @@ class StructuredDocumentJsonTest {
 
         val copy = parse(StructuredDocumentJson.splitByPositions(StructuredDocumentJson.toJson(document)) { listOf(10L) }.getValue(10L))
 
-        assertEquals(1, copy.get("protocolVersion").asInt)
+        assertFalse(copy.has("protocolVersion"))
         assertEquals("42", copy.getAsJsonObject("header").get("receiptNumber").asString)
         assertEquals(1, copy.getAsJsonArray("customFields").size())
         assertEquals("total", copy.getAsJsonArray("customFields")[0].asJsonObject.get("key").asString)
@@ -261,7 +256,6 @@ class StructuredDocumentJsonTest {
     fun splitByPositionsSendsOnePositionToSeveralPrinters() {
         val json = StructuredDocumentJson.toJson(
             StructuredDocument(
-                protocolVersion = 1,
                 header = emptyMap(),
                 positions = listOf(
                     StructuredPosition("First", BigDecimal("1.000"), 0, "p1", emptyList(), emptyList())
@@ -284,7 +278,6 @@ class StructuredDocumentJsonTest {
     fun splitByPositionsDropsPositionWithEmptyDestination() {
         val json = StructuredDocumentJson.toJson(
             StructuredDocument(
-                protocolVersion = 1,
                 header = emptyMap(),
                 positions = listOf(
                     StructuredPosition("First", BigDecimal("1.000"), 0, "p1", emptyList(), emptyList()),
@@ -307,31 +300,10 @@ class StructuredDocumentJsonTest {
     @Test
     fun splitByPositionsReturnsEmptyMapForDocumentWithoutPositions() {
         val json = StructuredDocumentJson.toJson(
-            StructuredDocument(1, mapOf("receiptNumber" to "42"), emptyList(), emptyList())
+            StructuredDocument(mapOf("receiptNumber" to "42"), emptyList(), emptyList())
         )
 
         assertTrue(StructuredDocumentJson.splitByPositions(json) { listOf(10L) }.isEmpty())
-    }
-
-    @Test
-    fun protocolVersionDoesNotRejectDocument() {
-        val document = StructuredDocumentJson.fromJson(
-            """{"protocolVersion":2,"positions":[{"name":"Espresso","quantity":"1.000"}]}"""
-        )
-
-        assertEquals(2, document.protocolVersion)
-        assertEquals(1, document.positions.size)
-        assertEquals("Espresso", document.positions[0].name)
-    }
-
-    @Test
-    fun unknownProtocolVersionIsWrittenAndReadBack() {
-        val document = sampleDocument().copy(protocolVersion = 7)
-
-        val restored = StructuredDocumentJson.fromJson(StructuredDocumentJson.toJson(document))
-
-        assertEquals(7, restored.protocolVersion)
-        assertEquals(document, restored)
     }
 
     @Test
@@ -376,7 +348,7 @@ class StructuredDocumentJsonTest {
 
     @Test
     fun emptyDocumentRoundTrip() {
-        val empty = StructuredDocument(1, emptyMap(), emptyList(), emptyList())
+        val empty = StructuredDocument(emptyMap(), emptyList(), emptyList())
 
         val restored = StructuredDocumentJson.fromJson(StructuredDocumentJson.toJson(empty))
 
@@ -389,7 +361,6 @@ class StructuredDocumentJsonTest {
     @Test
     fun highPrecisionQuantityIsNotTruncated() {
         val document = StructuredDocument(
-            protocolVersion = 1,
             header = emptyMap(),
             positions = listOf(
                 StructuredPosition(
@@ -413,7 +384,6 @@ class StructuredDocumentJsonTest {
     @Test
     fun headerKeyOrderIsPreserved() {
         val document = StructuredDocument(
-            protocolVersion = 1,
             header = linkedMapOf("first" to "1", "second" to "2", "third" to "3"),
             positions = emptyList(),
             customFields = emptyList()
@@ -429,7 +399,7 @@ class StructuredDocumentJsonTest {
         val root = parse(StructuredDocumentJson.toJson(sampleDocument()))
 
         assertEquals(
-            setOf("protocolVersion", "header", "positions", "customFields"),
+            setOf("header", "positions", "customFields"),
             root.keySet()
         )
         val position = root.getAsJsonArray("positions")[0].asJsonObject
@@ -444,10 +414,43 @@ class StructuredDocumentJsonTest {
         assertFalse(root.has("opaquePayload"))
     }
 
+    // ───────── D19: protocolVersion переехал из тела в конверт Intent ─────────
+
+    @Test
+    fun toJsonDoesNotContainProtocolVersion() {
+        val root = parse(StructuredDocumentJson.toJson(sampleDocument()))
+
+        assertFalse("protocolVersion must not be written into the body", root.has("protocolVersion"))
+        assertEquals(setOf("header", "positions", "customFields"), root.keySet())
+    }
+
+    @Test
+    fun fromJsonAcceptsBodyWithoutProtocolVersion() {
+        val document = StructuredDocumentJson.fromJson(
+            """{"header":{},"positions":[{"name":"Espresso","quantity":"1.000"}],"customFields":[]}"""
+        )
+
+        assertEquals(1, document.positions.size)
+        assertEquals("Espresso", document.positions[0].name)
+        assertEquals(BigDecimal("1.000"), document.positions[0].quantity)
+    }
+
+    @Test
+    fun legacyBodyWithProtocolVersionKeyIsStillParsed() {
+        // Тело старого продьюсера может ещё содержать ключ: он неизвестен кодеку,
+        // игнорируется и не мешает разбору (forward-compatibility, D19).
+        val document = StructuredDocumentJson.fromJson(
+            """{"protocolVersion":7,"positions":[{"name":"Espresso","quantity":"1.000"}]}"""
+        )
+
+        assertEquals(1, document.positions.size)
+        assertEquals("Espresso", document.positions[0].name)
+    }
+
     // ───────── W1: отсутствующий measurePrecision берётся из scale количества ─────────
 
     private fun documentWith(positionJson: String): String =
-        """{"protocolVersion":1,"header":{},"positions":[{$positionJson}],"customFields":[]}"""
+        """{"header":{},"positions":[{$positionJson}],"customFields":[]}"""
 
     private fun positionWithoutPrecision(quantity: String = "\"2.500\""): String =
         "\"name\":\"Espresso\",\"quantity\":$quantity,\"productUuid\":null," +
