@@ -83,7 +83,7 @@ receiptPrinterService.printDocument(printerId, document);
 
 Модель (пакет `ru.softc.evotor.integration.print`):
 
-* `StructuredDocument(protocolVersion, header, positions, customFields)` - документ;
+* `StructuredDocument(header, positions, customFields)` - документ;
 * `StructuredPosition(name, quantity, measurePrecision, productUuid, subPositions, customFields)` - позиция документа, количество передаётся как `BigDecimal`, чтобы не потерять точность и scale;
 * `measurePrecision` - количество знаков после запятой при выводе количества. Если ключ отсутствует (или `null`), берётся scale количества: `quantity=2.500` выводится как `2.500`, а не округляется до `3`. Явный `0` (штуки) сохраняется и не перекрывается scale. Допустимый диапазон - 0..18 в обоих случаях; значение вне диапазона или не целое отклоняется на разборе с `IllegalArgumentException`, а не на печати;
 * `PrintCustomField(key, title, value)` - произвольное поле документа.
@@ -97,7 +97,6 @@ receiptPrinterService.printDocument(printerId, document);
 
 ```java
 StructuredDocument document = new StructuredDocument(
-    StructuredDocument.PROTOCOL_VERSION_CURRENT,
     Collections.singletonMap("receiptNumber", "42"),
     Collections.singletonList(new StructuredPosition(
         "Espresso", new BigDecimal("2.500"), 3, "product-1",
@@ -115,11 +114,11 @@ if (!ReceiptPrinter.printStructuredDocument(context, printerId, document)) {
 
 ### Версия протокола и wire-format
 
-`StructuredDocument.protocolVersion` - версия wire-layout контракта, а не версия библиотеки. Поддерживаемая версия публикуется как `StructuredDocument.PROTOCOL_VERSION_CURRENT`.
+Версия wire-layout контракта живёт в конверте Intent (extra `EXTRA_PROTOCOL_VERSION`), а не в теле документа. Продьюсер штампует в конверт `StructuredDocument.PROTOCOL_VERSION_CURRENT` - поддерживаемую библиотекой версию.
 
-Документ передаётся JSON-строкой. Сериализация выполняется только кодеком `StructuredDocumentJson`: приложениям запрещено собирать JSON вручную - у JSON нет compile-time схемы, и опечатка в имени ключа приводит к тихой потере поля. Ключи документа: `protocolVersion`, `header`, `positions`, `customFields`.
+Документ передаётся JSON-строкой. Сериализация выполняется только кодеком `StructuredDocumentJson`: приложениям запрещено собирать JSON вручную - у JSON нет compile-time схемы, и опечатка в имени ключа приводит к тихой потере поля. Ключи документа: `header`, `positions`, `customFields`.
 
-Правило получателя: несовпадение `protocolVersion` с `PROTOCOL_VERSION_CURRENT` не является отказом. Получатель печатает известные поля и логирует расхождение - неизвестный layout неотличим от известного с новыми ключами, поэтому версия не может служить основанием для отказа от печати.
+Правило получателя: несовпадение версии из конверта с `PROTOCOL_VERSION_CURRENT` не является отказом. Получатель печатает известные поля и логирует расхождение - неизвестный layout неотличим от известного с новыми ключами, поэтому версия не может служить основанием для отказа от печати.
 
 Неизвестные ключи при чтении игнорируются - это forward-совместимость: документ с новыми ключами читается полностью, а получатель печатает то, что понял.
 

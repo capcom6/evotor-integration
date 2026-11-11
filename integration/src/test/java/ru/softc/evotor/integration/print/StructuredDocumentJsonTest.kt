@@ -511,7 +511,7 @@ class StructuredDocumentJsonTest {
         assertEquals(0, position.measurePrecision)
     }
 
-    // ───────── W3: диапазон 0..9, fail-fast ─────────
+    // ───────── W3: диапазон 0..18, fail-fast ─────────
 
     @Test
     fun measurePrecisionBoundsAreAccepted() {
