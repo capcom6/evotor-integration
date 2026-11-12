@@ -91,7 +91,8 @@ receiptPrinterService.printDocument(printerId, document);
 Точки входа:
 
 * boolean `ServicePrint.printStructured(Context context, StructuredDocument document)` - печать через приложение serviceprint, требует serviceprint версии не ниже 19;
-* boolean `ReceiptPrinter.printStructuredDocument(Context context, long printerId, StructuredDocument document)` - печать на конкретном принтере через драйвер, требует драйвер версии не ниже 142.
+* boolean `ReceiptPrinter.printStructuredDocument(Context context, long printerId, StructuredDocument document)` - печать на конкретном принтере через драйвер, требует драйвер версии не ниже 142;
+* boolean `ReceiptPrinter.printStructuredDocument(Context context, long printerId, String documentJson, Intent incoming)` - форвард relay'ем уже сериализованного документа: JSON-тело передаётся параметром, конверт переносится из входящего Intent по allowlist (подробнее - «Правило проксирования»).
 
 Оба метода возвращают `false`, если получатель не установлен или его версия ниже порога. При `false` ничего не отправляется - вызывающий код обязан деградировать сам.
 
@@ -116,7 +117,7 @@ if (!ReceiptPrinter.printStructuredDocument(context, printerId, document)) {
 
 Версия wire-layout контракта живёт в конверте Intent (extra `EXTRA_PROTOCOL_VERSION`), а не в теле документа. Продьюсер штампует в конверт `StructuredDocument.PROTOCOL_VERSION_CURRENT` - поддерживаемую библиотекой версию.
 
-Документ передаётся JSON-строкой. Сериализация выполняется только кодеком `StructuredDocumentJson`: приложениям запрещено собирать JSON вручную - у JSON нет compile-time схемы, и опечатка в имени ключа приводит к тихой потере поля. Ключи документа: `header`, `positions`, `customFields`.
+Документ передаётся получателю печати JSON-строкой в extra `EXTRA_DOCUMENT_JSON`. Сериализацию выполняет только кодек `StructuredDocumentJson`: приложениям запрещено собирать JSON вручную - у JSON нет compile-time схемы, и опечатка в имени ключа приводит к тихой потере поля. Ключи документа: `header`, `positions`, `customFields`.
 
 Правило получателя: несовпадение версии из конверта с `PROTOCOL_VERSION_CURRENT` не является отказом. Получатель печатает известные поля и логирует расхождение - неизвестный layout неотличим от известного с новыми ключами, поэтому версия не может служить основанием для отказа от печати.
 
@@ -127,3 +128,5 @@ if (!ReceiptPrinter.printStructuredDocument(context, printerId, document)) {
 Промежуточные приложения (relay, любой слой между вызывающим приложением и получателем печати) обязаны передавать `header` и `customFields` получателю как есть: без фильтрации, переименования, интерпретации и переупорядочивания. Ключи не имеют семантики для промежуточного слоя - значение приходит от вызывающего приложения, отображение определяет получатель.
 
 Relay обязан работать с JSON-деревом через `StructuredDocumentJson.splitByPositions`, а не с типизированной моделью: разбор в модель отбрасывает неизвестные ключи. При делении документа заменяется только массив `positions`, остальные ключи документа и позиций (включая неизвестные) переносятся как есть.
+
+Для форварда relay использует четырёхаргументную перегрузку `ReceiptPrinter.printStructuredDocument(context, printerId, documentJson, incoming)`: JSON-тело после `splitByPositions` передаётся параметром, конверт переносится из входящего Intent по allowlist (сейчас - только `EXTRA_PROTOCOL_VERSION`, и только если ключ в `incoming` присутствует; `incoming == null` допустим). Полученная версия пересылается как есть и **не перештамповывается** на `PROTOCOL_VERSION_CURRENT` - тело описывает продьюсера, поэтому расхождение версий обязано дойти до получателя. Если ключа в `incoming` нет, версия в исходящий конверт не кладётся. Трёхаргументная строковая перегрузка, наоборот, штампует `PROTOCOL_VERSION_CURRENT`: она предназначена для документов, созданных этим приложением, а не полученных.
