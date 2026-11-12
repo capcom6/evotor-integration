@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.BaseColumns
 import ru.evotor.devices.commons.printer.PrinterDocument
+import ru.softc.evotor.integration.print.StructuredDocument
+import ru.softc.evotor.integration.print.StructuredDocumentJson
 import java.util.*
 
 /**
@@ -39,6 +41,35 @@ class ReceiptPrinter private constructor(
         @Deprecated("Переходим на работу через BroadcastReceiver или binded Service")
         private const val SERVICE_NAME = "ru.softc.evotorserviceprinter.PrinterDriverService"
         private const val RECEIVER_NAME = "ru.softc.evotorserviceprinter.EventsReceiver"
+
+        /**
+         * Минимальная версия драйвера, поддерживающая структурированную печать (D3)
+         */
+        private const val STRUCTURED_PRINT_MIN_DRIVER_VERSION = 142
+
+        private const val ACTION_PRINT_STRUCTURED =
+            "ru.softc.evotorserviceprinter.ACTION_PRINT_STRUCTURED"
+
+        /**
+         * Extra с JSON-строкой структурированного документа.
+         *
+         * Имя намеренно отличается от `EXTRA_DOCUMENT`, который драйвер уже
+         * использует для Parcelable-документа в действии `ACTION_PRINT_DOCUMENT`:
+         * оба действия обрабатываются в одном `onReceive`, и одинаковое имя
+         * extra у двух разных типов исключает путаницу.
+         */
+        private const val EXTRA_DOCUMENT_JSON = "EXTRA_DOCUMENT_JSON"
+
+        /**
+         * Extra с версией wire-layout контракта в конверте Intent (D19).
+         *
+         * Продьюсер штампует версию, по которой **сам** уложил тело документа;
+         * форвард пересылает полученную версию как есть. Строковое значение
+         * согласовано с serviceprint (`ServicePrint.EXTRA_PROTOCOL_VERSION`).
+         * Allowlist конверта живёт в библиотеке: слепое копирование
+         * `incoming.extras` запрещено.
+         */
+        const val EXTRA_PROTOCOL_VERSION = "EXTRA_PROTOCOL_VERSION"
 
         ////////////////////////////////////////////////////////////////////////////////////////////
         @JvmStatic
@@ -174,6 +205,144 @@ class ReceiptPrinter private constructor(
             starter.putExtra("EXTRA_DOCUMENT", document)
             starter.component = name
             context.startService(starter)
+        }
+
+        /**
+         * Печать структурированного документа на конкретный принтер через драйвер.
+         *
+         * Документ сериализуется кодеком [StructuredDocumentJson] в JSON-строку и
+         * передаётся драйверу строкой: драйвер сам решает, как отрисовать шапку,
+         * позиции и произвольные поля по своему шаблону.
+         *
+         * Тело уложено здесь, поэтому в конверт штампуется
+         * [StructuredDocument.PROTOCOL_VERSION_CURRENT] (см. строковую перегрузку).
+         *
+         * @param context Контекст приложения
+         * @param printerId Идентификатор принтера
+         * @param document Структурированный документ
+         * @return true, если документ отправлен драйверу; false, если драйвер не установлен
+         *   либо его версия ниже порога [STRUCTURED_PRINT_MIN_DRIVER_VERSION] (D3).
+         *   При false ничего не отправляется - вызывающий код обязан деградировать сам (D1).
+         */
+        @JvmStatic
+        fun printStructuredDocument(
+            context: Context,
+            printerId: Long,
+            document: StructuredDocument
+        ): Boolean {
+            return printStructuredDocument(context, printerId, StructuredDocumentJson.toJson(document))
+        }
+
+        /**
+         * Печать структурированного документа на конкретный принтер через драйвер.
+         *
+         * JSON-строка передаётся драйверу как есть, без разбора в типизированную
+         * модель: промежуточный слой (relay) обязан пересылать документ, сохраняя
+         * неизвестные ключи, - разбор в модель их бы отбросил.
+         *
+         * Семантика "тело уложено мной": в конверт штампуется
+         * [StructuredDocument.PROTOCOL_VERSION_CURRENT].
+         *
+         * @param context Контекст приложения
+         * @param printerId Идентификатор принтера
+         * @param documentJson JSON-строка структурированного документа
+         * @return true, если документ отправлен драйверу; false, если драйвер не установлен
+         *   либо его версия ниже порога [STRUCTURED_PRINT_MIN_DRIVER_VERSION] (D3).
+         *   При false ничего не отправляется - вызывающий код обязан деградировать сам (D1).
+         */
+        @JvmStatic
+        fun printStructuredDocument(
+            context: Context,
+            printerId: Long,
+            documentJson: String
+        ): Boolean {
+            return sendStructuredDocument(
+                context,
+                printerId,
+                documentJson,
+                StructuredDocument.PROTOCOL_VERSION_CURRENT
+            )
+        }
+
+        /**
+         * Пере-создание Intent для форварда (relay): тело - параметром, конверт -
+         * из входящего Intent по allowlist.
+         *
+         * Копируется **ровно** allowlist конверта (сейчас только
+         * [EXTRA_PROTOCOL_VERSION]) и **только если ключ присутствует**: слепое
+         * копирование `incoming.extras` запрещено - конверт и тело у хопов
+         * разные, в inbound попадёт legacy-мусор. Полученная версия пересылается
+         * как есть и НЕ перештамповывается [StructuredDocument.PROTOCOL_VERSION_CURRENT]:
+         * тело описывает продьюсер, поэтому расхождение версий обязано дойти до
+         * получателя (AC-DR-9). Если ключа в incoming нет (либо incoming == null),
+         * extra в исходящий конверт не кладётся: версия неизвестна, выдумывать её
+         * нельзя.
+         *
+         * printerId берётся из маршрутизации вызывающего, а не из конверта.
+         *
+         * @param context Контекст приложения
+         * @param printerId Идентификатор принтера (из маршрутизации)
+         * @param documentJson JSON-строка структурированного документа (тело после split)
+         * @param incoming Входящий Intent, из которого переносится конверт; null допустим
+         * @return true, если документ отправлен драйверу; false, если драйвер не установлен
+         *   либо его версия ниже порога [STRUCTURED_PRINT_MIN_DRIVER_VERSION] (D3).
+         *   При false ничего не отправляется - вызывающий код обязан деградировать сам (D1).
+         */
+        @JvmStatic
+        fun printStructuredDocument(
+            context: Context,
+            printerId: Long,
+            documentJson: String,
+            incoming: Intent?
+        ): Boolean {
+            return sendStructuredDocument(
+                context,
+                printerId,
+                documentJson,
+                incomingProtocolVersion(incoming)
+            )
+        }
+
+        /**
+         * Общая отправка структурированного документа: version-gate и сборка
+         * Intent в одном месте для обеих публичных строковых перегрузок (D1/D3).
+         *
+         * @param protocolVersion версия в конверте; null - extra не кладётся
+         *  (версия не получена и не выдумывается)
+         */
+        private fun sendStructuredDocument(
+            context: Context,
+            printerId: Long,
+            documentJson: String,
+            protocolVersion: Int?
+        ): Boolean {
+            val version = driverVersion(context) ?: return false
+            if (version < STRUCTURED_PRINT_MIN_DRIVER_VERSION) {
+                return false
+            }
+
+            context.sendBroadcast(Intent(ACTION_PRINT_STRUCTURED).apply {
+                component = ComponentName(PACKAGE_NAME, RECEIVER_NAME)
+                putExtra("EXTRA_PRINTER_ID", printerId)
+                putExtra(EXTRA_DOCUMENT_JSON, documentJson)
+                if (protocolVersion != null) {
+                    putExtra(EXTRA_PROTOCOL_VERSION, protocolVersion)
+                }
+            })
+            return true
+        }
+
+        /**
+         * Allowlist конверта из входящего Intent: только [EXTRA_PROTOCOL_VERSION]
+         * и только при наличии ключа.
+         *
+         * @return полученная версия либо null, если ключ (или incoming) отсутствует
+         */
+        private fun incomingProtocolVersion(incoming: Intent?): Int? {
+            if (incoming == null || !incoming.hasExtra(EXTRA_PROTOCOL_VERSION)) {
+                return null
+            }
+            return incoming.getIntExtra(EXTRA_PROTOCOL_VERSION, 0)
         }
     }
 
